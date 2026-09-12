@@ -1,0 +1,102 @@
+name: Arch Linux
+
+on:
+  push:
+    branches: [ arch-ci ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Compiling against Arch's current kernel headers is the actual regression
+  # signal: the DKMS package alone never compiles a line of C.
+  build-module:
+    name: Build module against current kernel headers
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed git linux-headers bc
+
+      - uses: actions/checkout@v4
+
+      - name: Report kernel version
+        run: |
+          ls /usr/lib/modules/*/build | head -1
+          echo "KVER=$(basename $(dirname $(readlink -f /usr/lib/modules/*/build)))" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          KSRC=$(echo /usr/lib/modules/*/build)
+          make -j"$(nproc)" KSRC="$KSRC"
+
+      - name: Verify module metadata
+        run: |
+          test -f 8821cu.ko
+          modinfo ./8821cu.ko | grep -E '^(vermagic|version):'
+          modinfo ./8821cu.ko | grep -qi 'pC811' \
+            || { echo "::error::8821cu.ko does not claim 0bda:c811"; exit 1; }
+
+  package:
+    name: Build DKMS package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed git dkms namcap linux-headers
+
+      - uses: actions/checkout@v4
+
+      - name: Allow makepkg to run unprivileged
+        run: |
+          useradd -m build
+          chown -R build:build .
+          echo 'build ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+      - name: Create source tarball
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git archive --format=tar.gz \
+            --prefix="rtl8821cu-5.12.0.4/" \
+            -o packaging/arch/rtl8821cu-5.12.0.4.tar.gz HEAD
+          chown build:build packaging/arch/rtl8821cu-5.12.0.4.tar.gz
+
+      - name: makepkg
+        working-directory: packaging/arch
+        run: sudo -u build makepkg --syncdeps --noconfirm --cleanbuild
+
+      - name: Inspect package
+        working-directory: packaging/arch
+        run: |
+          pkg=$(ls ./*.pkg.tar.zst)
+          echo "Built: $pkg"
+          pacman -Qip "$pkg"
+          echo "--- contents ---"
+          pacman -Qlp "$pkg" | head -20
+          echo "--- checks that matter ---"
+          pacman -Qlp "$pkg" | grep -q '/usr/src/rtl8821cu-5.12.0.4/dkms.conf' \
+            || { echo "::error::dkms.conf missing, DKMS hooks will not fire"; exit 1; }
+          pacman -Qlp "$pkg" | grep -q '/etc/modprobe.d/8821cu.conf' \
+            || { echo "::error::modprobe.d blacklist missing"; exit 1; }
+          namcap "$pkg" || true
+
+      # `uname -r` in a container reports the runner's host kernel, which has no
+      # headers here, so DKMS autoinstall silently builds nothing. Target the
+      # kernel whose headers we actually installed.
+      - name: Install and build via DKMS
+        working-directory: packaging/arch
+        run: |
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          kver=$(basename /usr/lib/modules/*/ | head -1)
+          echo "Building for $kver"
+          dkms build   -m rtl8821cu -v 5.12.0.4 -k "$kver"
+          dkms install -m rtl8821cu -v 5.12.0.4 -k "$kver"
+          dkms status rtl8821cu/5.12.0.4 | tee /tmp/dkms.txt
+          grep -q installed /tmp/dkms.txt \
+            || { echo "::error::DKMS did not install the module"; exit 1; }
+          test -f "/usr/lib/modules/$kver/updates/dkms/8821cu.ko"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtl8821cu-dkms-pkg
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error

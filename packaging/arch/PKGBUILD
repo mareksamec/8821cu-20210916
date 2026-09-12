@@ -1,0 +1,32 @@
+# Maintainer: Marek Samec <samec.marek@gmail.com>
+
+pkgname=rtl8821cu-dkms
+_modname=rtl8821cu
+pkgver=5.12.0.4
+pkgrel=1
+pkgdesc="DKMS module for USB Wi-Fi adapters using the RTL8811CU, RTL8821CU and RTL8731AU chipsets"
+arch=('x86_64' 'aarch64' 'armv7h')
+url="https://github.com/mareksamec/8821cu-20210916"
+license=('GPL-2.0-only')
+depends=('dkms')
+optdepends=('wireless-regdb: regulatory database, required for correct channel and TX power limits')
+provides=("${_modname}=${pkgver}")
+conflicts=("${_modname}" 'rtl8821cu-git' 'rtl8821cu-dkms-git')
+source=("${_modname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+	local _src="${srcdir}/${_modname}-${pkgver}"
+	local _dst="${pkgdir}/usr/src/${_modname}-${pkgver}"
+
+	install -dm755 "${_dst}"
+	cp -a "${_src}/." "${_dst}/"
+
+	# Packaging and VCS files have no business in the DKMS source tree.
+	rm -rf "${_dst}/packaging" "${_dst}/.github" "${_dst}/.git" "${_dst}/.gitignore"
+
+	# Ships `blacklist rtw88_8821cu`, without which the in-tree driver races
+	# this one for 0bda:c811 at boot and loses only after a failed probe.
+	install -Dm644 "${_src}/8821cu.conf" "${pkgdir}/etc/modprobe.d/8821cu.conf"
+	install -Dm644 "${_src}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
