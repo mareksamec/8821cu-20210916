@@ -17,7 +17,7 @@ jobs:
       - name: Install build dependencies
         run: pacman -Syu --noconfirm --needed git linux-headers bc
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Report kernel version
         run: |
@@ -44,7 +44,7 @@ jobs:
       - name: Install build dependencies
         run: pacman -Syu --noconfirm --needed git dkms namcap linux-headers
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Allow makepkg to run unprivileged
         run: |
@@ -95,7 +95,7 @@ jobs:
             || { echo "::error::DKMS did not install the module"; exit 1; }
           test -f "/usr/lib/modules/$kver/updates/dkms/8821cu.ko"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rtl8821cu-dkms-pkg
           path: packaging/arch/*.pkg.tar.zst
