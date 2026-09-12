@@ -2,9 +2,19 @@ name: Arch Linux
 
 on:
   push:
-    branches: [ arch-ci ]
+    branches: [ main, arch-ci ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v5.12.0.4-k7.2). Leave empty to build without publishing.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   # Compiling against Arch's current kernel headers is the actual regression
@@ -97,6 +107,59 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: rtl8821cu-dkms-pkg
+          name: rtl8821cu-dkms-5.12.0.4
           path: packaging/arch/*.pkg.tar.zst
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [ build-module, package ]
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: rtl8821cu-dkms-5.12.0.4
+          path: dist
+
+      - name: Checksum
+        working-directory: dist
+        run: |
+          sha256sum ./*.pkg.tar.zst | tee sha256sums.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          notes=$(cat <<'EOF'
+          Arch Linux DKMS package for RTL8811CU / RTL8821CU / RTL8731AU adapters,
+          patched to build on kernel 7.x.
+
+          Install:
+
+              sudo pacman -U rtl8821cu-dkms-*.pkg.tar.zst
+
+          The package installs the driver source to `/usr/src/` for DKMS, so it is
+          rebuilt automatically on kernel updates, and ships
+          `/etc/modprobe.d/8821cu.conf` which blacklists the in-tree `rtw88_8821cu`.
+
+          `wireless-regdb` is an optional dependency and is worth installing: without
+          it the regulatory domain stays at `country 00`, which caps TX power and
+          makes every 5 GHz channel passive-scan only.
+          EOF
+          )
+          args=(--title "$TAG" --notes "$notes")
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists, replacing assets"
+            gh release upload "$TAG" dist/*.pkg.tar.zst dist/sha256sums.txt --clobber
+          else
+            gh release create "$TAG" "${args[@]}" dist/*.pkg.tar.zst dist/sha256sums.txt
+          fi
+          gh release view "$TAG" --json tagName,assets \
+            --jq '"published: \(.tagName)\n" + (.assets[] | "  \(.name)  \(.size) bytes")'
